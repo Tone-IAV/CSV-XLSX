@@ -362,8 +362,39 @@
     threshold:+ui('threshold').value, useCPF:ui('useCPF').checked, useCNS:ui('useCNS').checked, useMae:ui('useMae').checked, useMun:ui('useMun').checked,
     blocking: ui('blocking').value, hardRemove: ui('hardRemove').checked } }
 
-  function pickKeepIndex(indices,cfg){ let best=indices[0]; let bestDate=parseDateBR(get(rows[best],cfg.colNasc))||new Date(8640000000000000);
-    for(const i of indices){ const d=parseDateBR(get(rows[i],cfg.colNasc))||new Date(8640000000000000); if(d<bestDate){ best=i; bestDate=d } } return best }
+  function countFilledCells(row){
+    const headers = Array.isArray(window._headersOriginal) ? window._headersOriginal : [];
+    let filled = 0;
+    headers.forEach(h=>{
+      const value = row?.[h];
+      if(value===null || value===undefined) return;
+      if(typeof value === 'string'){ if(value.trim()!=='') filled++; return; }
+      if(typeof value === 'number'){ if(!Number.isNaN(value)) filled++; return; }
+      if(value instanceof Date){ if(!Number.isNaN(value.getTime())) filled++; return; }
+      if(typeof value === 'boolean'){ filled++; return; }
+      if(Array.isArray(value)){ if(value.length>0) filled++; return; }
+      const text = String(value).trim();
+      if(text!=='') filled++;
+    });
+    return filled;
+  }
+
+  function pickKeepIndex(indices,cfg){
+    let best=indices[0];
+    let bestFilled=countFilledCells(rows[best]);
+    const sentinel=new Date(8640000000000000);
+    let bestDate=parseDateBR(get(rows[best],cfg.colNasc))||sentinel;
+    for(const i of indices){
+      const filled=countFilledCells(rows[i]);
+      const d=parseDateBR(get(rows[i],cfg.colNasc))||sentinel;
+      if(filled>bestFilled || (filled===bestFilled && d<bestDate)){
+        best=i;
+        bestFilled=filled;
+        bestDate=d;
+      }
+    }
+    return best;
+  }
 
   function renderStats(){ const total=rows.length; const affected=dupTouched.size; const totalRemoved=removedIdx.size + hardRemovedRows.size; ui('stats').innerHTML=`
     <div class="p-2 rounded bg-emerald-50 border text-emerald-800">Total linhas<br><b class="mono text-lg">${total}</b></div>
