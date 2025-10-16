@@ -127,7 +127,7 @@
               <summary class="cursor-pointer font-medium">Como a similaridade é calculada?</summary>
               <ul class="list-disc ml-5 mt-1 text-slate-600">
                 <li>Normalização (caixa, acentos, pontuação, espaços, stopwords)</li>
-                <li>Jaro‑Winkler + bônus por ano/data iguais, mãe, município.</li>
+                <li>Jaro‑Winkler + bônus por dados iguais (data, mãe, município) e penalidade se datas divergirem.</li>
                 <li>Bloqueio por chave para acelerar em bases grandes.</li>
               </ul>
             </details>
@@ -290,11 +290,31 @@
     if(cfg.useCNS && cns1 && cns2 && cns1===cns2) return {match:true,reason:'CNS igual',sim:1};
     const nome1=get(r1,cfg.colNome), nome2=get(r2,cfg.colNome);
     const nasc1=parseDateBR(get(r1,cfg.colNasc)), nasc2=parseDateBR(get(r2,cfg.colNasc));
-    const sNome=score(nome1,nome2); let bonus=0;
-    if(nasc1&&nasc2){ if(nasc1.getTime()===nasc2.getTime()) bonus+=0.08; else if(y(nasc1)===y(nasc2)) bonus+=0.04; }
-    if(cfg.useMae){ const mae1=get(r1,cfg.colMae), mae2=get(r2,cfg.colMae); const sm=mae1||mae2?score(mae1,mae2):0; bonus+=Math.min(0.08, sm*0.08); }
-    if(cfg.useMun){ const m1=get(r1,cfg.colMun), m2=get(r2,cfg.colMun); if(m1&&m2&&norm(m1)===norm(m2)) bonus+=0.02; }
-    const sim = Math.min(1,sNome+bonus); return {match: sim>=cfg.threshold, reason:`sim=${sim.toFixed(2)} (nome:${sNome.toFixed(2)} + bonus:${bonus.toFixed(2)})`, sim};
+    let penalty=0; const penaltyInfo=[];
+    if(nasc1 && nasc2){
+      const sameDay=nasc1.getTime()===nasc2.getTime();
+      if(!sameDay){
+        const year1=y(nasc1), year2=y(nasc2);
+        if(year1 && year2 && year1!==year2) return {match:false, reason:`Anos de nascimento diferentes (${year1} × ${year2})`, sim:0};
+        penalty+=0.18;
+        penaltyInfo.push(`datas diferentes (${formatDateBRStr(nasc1)} × ${formatDateBRStr(nasc2)})`);
+      }
+    }
+    const sNome=score(nome1,nome2); let bonus=0; const bonusInfo=[];
+    if(nasc1&&nasc2&&nasc1.getTime()===nasc2.getTime()){ bonus+=0.08; bonusInfo.push('data igual'); }
+    if(cfg.useMae){
+      const mae1=get(r1,cfg.colMae), mae2=get(r2,cfg.colMae);
+      const sm=mae1||mae2?score(mae1,mae2):0;
+      if(sm>0){ const inc=Math.min(0.08, sm*0.08); if(inc>0){ bonus+=inc; bonusInfo.push(`mãe ${sm.toFixed(2)}`); } }
+    }
+    if(cfg.useMun){
+      const m1=get(r1,cfg.colMun), m2=get(r2,cfg.colMun);
+      if(m1&&m2&&norm(m1)===norm(m2)){ bonus+=0.02; bonusInfo.push('município igual'); }
+    }
+    const rawSim = sNome + bonus - penalty;
+    const sim = Math.min(1, Math.max(0, rawSim));
+    const details = `nome:${sNome.toFixed(2)}${bonusInfo.length?` + ${bonusInfo.join(' + ')}`:''}${penaltyInfo.length?` - ${penaltyInfo.join(' - ')}`:''}`;
+    return {match: sim>=cfg.threshold, reason:`sim=${sim.toFixed(2)} (${details})`, sim};
   }
   function clusterize(rows,cfg){ const blocks=new Map(); rows.forEach((r,i)=>{ const k=blockKey(r,cfg); if(!blocks.has(k)) blocks.set(k,[]); blocks.get(k).push(i)});
     const visited=new Set(); const clusters=[]; for(const ids of blocks.values()){
