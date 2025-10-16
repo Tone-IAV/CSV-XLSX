@@ -141,13 +141,28 @@
       <div class="card p-3 md:p-4">
         <div class="flex items-center justify-between mb-3">
           <h2 class="text-lg font-semibold">Grupos suspeitos de duplicidade</h2>
-          <div class="flex gap-2">
+          <div class="flex gap-2 flex-wrap justify-end">
             <button id="btnExportDedup" class="px-3 py-2 rounded bg-indigo-600 text-white text-sm">Exportar Excel (deduplicado & log)</button>
             <button id="btnExportLog" class="px-3 py-2 rounded bg-slate-900 text-white text-sm">Exportar Excel (somente log)</button>
+            <button id="btnGenerateVBA" class="px-3 py-2 rounded border border-emerald-500 text-emerald-700 bg-emerald-50 text-sm">Gerar VBA (excluir no Excel)</button>
           </div>
         </div>
         <div class="mb-2 text-xs text-slate-600">Use <b>Excluir agora</b> para aplicar sua decisão de forma imediata (visual) ou marque <b>Excluir</b> para apenas registrar para a exportação.</div>
         <div id="groups" class="tableFix text-sm"></div>
+      </div>
+    </section>
+    <section id="vbaBox" class="hidden">
+      <div class="card p-3 md:p-4 space-y-3">
+        <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
+          <div>
+            <h3 class="text-lg font-semibold">Código VBA para exclusão automática no Excel</h3>
+            <p id="vbaMeta" class="text-xs muted">Gere o código após revisar as exclusões.</p>
+          </div>
+          <button id="btnCopyVBA" class="self-start px-3 py-1.5 rounded border text-sm">Copiar código</button>
+        </div>
+        <p class="text-sm text-slate-600">Cole o código abaixo em um módulo VBA (Alt + F11) e ajuste o nome da planilha conforme necessário antes de executar. As linhas consideradas aqui referem-se ao arquivo original (cabeçalho na linha 1).</p>
+        <textarea id="vbaCode" readonly class="w-full h-48 border rounded p-3 font-mono text-xs"></textarea>
+        <div id="vbaCopyStatus" class="text-xs text-emerald-600 hidden">Código copiado para a área de transferência.</div>
       </div>
     </section>
   </main>
@@ -180,10 +195,12 @@
   let keepIdx=new Set(), removedIdx=new Set(), dupTouched=new Set();
   let decisions=new Map(); // rowIndex -> 'keep'|'remove'
   let groupNoDelete=new Set(); // gi -> true
+  let hardRemovedRows=new Set(); // linhas originais removidas imediatamente
   const ui=id=>document.getElementById(id);
 
   // ===== Entrada (CSV/XLSX) =====
   function loadFromObjects(objs){
+    hardRemovedRows.clear();
     rows = objs.map((o,idx)=>({__row:idx+2, ...o}));
     headers = Object.keys(objs[0]||{}).map(h=>norm(h));
     window._headersOriginal = Object.keys(objs[0]||{});
@@ -204,7 +221,7 @@
 
   ui('file').addEventListener('change', ev=>{
     const f=ev.target.files[0]; if(!f) return;
-    rows=[]; headers=[]; groups=[]; keepIdx.clear(); removedIdx.clear(); dupTouched.clear(); decisions.clear(); groupNoDelete.clear();
+    rows=[]; headers=[]; groups=[]; keepIdx.clear(); removedIdx.clear(); dupTouched.clear(); decisions.clear(); groupNoDelete.clear(); hardRemovedRows.clear();
     const name=(f.name||'').toLowerCase();
     if(name.endsWith('.xlsx') || name.endsWith('.xls')){
       const fr=new FileReader(); fr.onload=e=>{ const data=new Uint8Array(e.target.result); const wb=XLSX.read(data,{type:'array'}); const ws=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:'', raw:false}); loadFromObjects(ws) }; fr.readAsArrayBuffer(f);
@@ -265,11 +282,11 @@
   function pickKeepIndex(indices,cfg){ let best=indices[0]; let bestDate=parseDateBR(get(rows[best],cfg.colNasc))||new Date(8640000000000000);
     for(const i of indices){ const d=parseDateBR(get(rows[i],cfg.colNasc))||new Date(8640000000000000); if(d<bestDate){ best=i; bestDate=d } } return best }
 
-  function renderStats(){ const total=rows.length; const affected=dupTouched.size; ui('stats').innerHTML=`
+  function renderStats(){ const total=rows.length; const affected=dupTouched.size; const totalRemoved=removedIdx.size + hardRemovedRows.size; ui('stats').innerHTML=`
     <div class="p-2 rounded bg-emerald-50 border text-emerald-800">Total linhas<br><b class="mono text-lg">${total}</b></div>
     <div class="p-2 rounded bg-indigo-50 border text-indigo-800">Grupos<br><b class="mono text-lg">${groups.length}</b></div>
     <div class="p-2 rounded bg-amber-50 border text-amber-800">Registros tocados<br><b class="mono text-lg">${affected}</b></div>
-    <div class="p-2 rounded bg-rose-50 border text-rose-800">Excluídos (proposta)<br><b class="mono text-lg">${removedIdx.size}</b></div>` }
+    <div class="p-2 rounded bg-rose-50 border text-rose-800">Excluídos (proposta)<br><b class="mono text-lg">${totalRemoved}</b></div>` }
 
   function renderGroups(){
     const container=ui('groups'); if(groups.length===0){ container.innerHTML='<div class="text-slate-600">Nenhum grupo suspeito encontrado com as regras atuais.</div>'; return }
@@ -307,6 +324,8 @@
   // ===== Ação direta: Excluir agora =====
   function handleImmediateDelete(idx,gi){ const cfg=buildCfg(); decisions.set(idx,'remove'); if(!cfg.hardRemove){ applyDecisions(cfg); renderGroups(); return; }
     // hard remove: tira da base e reagrupa
+    const originalRow = rows[idx]?.__row;
+    if(originalRow!=null) hardRemovedRows.add(originalRow);
     rows.splice(idx,1);
     // Rebuild estruturas (índices mudaram)
     decisions = new Map(); removedIdx.clear(); keepIdx.clear(); dupTouched.clear(); groupNoDelete.delete(gi);
@@ -332,6 +351,73 @@
 
   ui('btnExportDedup').addEventListener('click', exportExcel);
   ui('btnExportLog').addEventListener('click', exportLogOnly);
+
+  function collectRemovedRows(cfg){
+    applyDecisions(cfg);
+    const nums=new Set(hardRemovedRows);
+    removedIdx.forEach(i=>{
+      const r=rows[i];
+      const original=r?.__row;
+      if(original!=null) nums.add(original);
+    });
+    return Array.from(nums).filter(n=>Number.isFinite(n)).sort((a,b)=>a-b);
+  }
+
+  function formatVbaArray(nums){
+    if(!nums.length) return 'Array()';
+    const chunkSize=25;
+    const lines=[];
+    for(let i=0;i<nums.length;i+=chunkSize) lines.push(nums.slice(i,i+chunkSize).join(', '));
+    if(lines.length===1) return `Array(${lines[0]})`;
+    return `Array(${lines[0]}, _\n          ${lines.slice(1).join(', _\n          ')})`;
+  }
+
+  function buildVbaCode(nums){
+    if(!nums.length) return "' Nenhuma linha foi marcada para exclusão.";
+    const arrExpr=formatVbaArray(nums);
+    return [
+      "' Código gerado automaticamente pelo Deduplicador",
+      "Sub ExcluirLinhasDuplicadas()",
+      "    Dim linhas As Variant",
+      "    Dim ws As Worksheet",
+      "    Set ws = ThisWorkbook.Worksheets(\"NOME_DA_PLANILHA\") ' ajuste conforme necessário",
+      `    linhas = ${arrExpr}`,
+      "    Application.ScreenUpdating = False",
+      "    Application.Calculation = xlCalculationManual",
+      "    On Error GoTo Fim",
+      "    Dim i As Long",
+      "    For i = UBound(linhas) To LBound(linhas) Step -1",
+      "        ws.Rows(linhas(i)).Delete",
+      "    Next i",
+      "Fim:",
+      "    Application.Calculation = xlCalculationAutomatic",
+      "    Application.ScreenUpdating = True",
+      "End Sub"
+    ].join('\n');
+  }
+
+  ui('btnGenerateVBA').addEventListener('click', ()=>{
+    const cfg=buildCfg();
+    const linhas=collectRemovedRows(cfg);
+    const code=buildVbaCode(linhas);
+    ui('vbaCode').value=code;
+    const meta=linhas.length? `${linhas.length} linha(s) do arquivo original serão excluídas automaticamente.` : 'Nenhuma linha marcada para exclusão.';
+    ui('vbaMeta').textContent=meta;
+    ui('vbaBox').classList.remove('hidden');
+    ui('vbaCopyStatus').classList.add('hidden');
+  });
+
+  ui('btnCopyVBA').addEventListener('click', async ()=>{
+    const code=ui('vbaCode').value;
+    try{
+      await navigator.clipboard.writeText(code);
+      ui('vbaCopyStatus').textContent='Código copiado para a área de transferência.';
+      ui('vbaCopyStatus').classList.remove('hidden');
+    }catch(err){
+      ui('vbaCopyStatus').textContent='Não foi possível copiar automaticamente. Copie manualmente o texto acima.';
+      ui('vbaCopyStatus').classList.remove('hidden');
+    }
+  });
   </script>
 </body>
 </html>
