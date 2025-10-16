@@ -181,9 +181,17 @@
       if(!isNaN(d)) return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
     }
     let s=String(input||'').trim(); if(!s) return null;
-    const br=s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})(?:\D.*)?$/);
+    const br=s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})(?:\D.*)?$/);
     if(br){
-      const[,dd,mm,yy]=br.map(Number);
+      const dd=+br[1], mm=+br[2];
+      let yy=+br[3];
+      if(br[3].length===2){
+        const currentYear=new Date().getFullYear();
+        const century=Math.floor(currentYear/100);
+        const pivot=currentYear%100;
+        const baseCentury=yy>pivot?century-1:century;
+        yy=baseCentury*100+yy;
+      }
       const d=new Date(yy,mm-1,dd);
       if(d.getFullYear()===yy && d.getMonth()===mm-1 && d.getDate()===dd) return d;
     }
@@ -196,6 +204,15 @@
     const t=new Date(s);
     return isNaN(t)?null:t;
   }
+  const formatDateBRStr = input => {
+    if(input===null || input===undefined) return '';
+    const d=parseDateBR(input);
+    if(!d) return String(input);
+    const day=String(d.getDate()).padStart(2,'0');
+    const month=String(d.getMonth()+1).padStart(2,'0');
+    const year=String(d.getFullYear()).padStart(4,'0');
+    return `${day}/${month}/${year}`;
+  };
   const y = d => d? d.getFullYear(): '';
   function soundexBR(str){ str=norm(str).replace(/H/g,''); if(!str) return '';
     const map={B:1,F:1,P:1,V:1,C:2,G:2,J:2,K:2,Q:2,S:2,X:2,Z:2,D:3,T:3,L:4,M:5,N:5,R:6};
@@ -309,7 +326,9 @@
 
   function renderGroups(){
     const container=ui('groups'); if(groups.length===0){ container.innerHTML='<div class="text-slate-600">Nenhum grupo suspeito encontrado com as regras atuais.</div>'; return }
+    const cfg=buildCfg();
     const cols = window._headersOriginal; container.innerHTML='';
+    const dateKey = cfg.colNasc!=null ? cols[cfg.colNasc] : null;
     groups.forEach((g,gi)=>{
       const rowsHtml = g.map(idx=>{
         const r=rows[idx]; const act = decisions.get(idx) || (removedIdx.has(idx)?'remove':'keep');
@@ -318,7 +337,11 @@
             <button data-del="${idx}" data-gi="${gi}" class="px-2 py-0.5 text-xs rounded border border-rose-300 hover:bg-rose-50">🗑 Excluir agora</button>
             <button data-keep="${idx}" class="ml-1 px-2 py-0.5 text-xs rounded border border-emerald-300 hover:bg-emerald-50">✓ Manter</button>
           </td>`;
-        const cells = cols.map(h=>`<td class=\"px-2 py-1 border-t\">${(r[h]??'')}</td>`).join('');
+        const cells = cols.map(h=>{
+          let value=r[h]??'';
+          if(dateKey && h===dateKey) value=formatDateBRStr(value) || '';
+          return `<td class=\"px-2 py-1 border-t\">${value}</td>`;
+        }).join('');
         return `<tr data-idx=\"${idx}\" data-gi=\"${gi}\" class=\"hover:bg-indigo-50\">${actionHtml}<td class=\"px-2 py-1 border-t font-medium\">${r.__row??''}</td>${cmdHtml}${cells}</tr>`
       }).join('');
       const head = ['Ação','# Linha','Comandos',...cols].map(h=>`<th class="px-2 py-1 text-left text-slate-600">${h}</th>`).join('');
@@ -359,14 +382,30 @@
   // ===== Exportação =====
   function toWorksheet(arr){ return XLSX.utils.json_to_sheet(arr, {header: window._headersOriginal}); }
 
-  function exportExcel(){ const cfg=buildCfg(); applyDecisions(cfg); const dedup = rows.filter((_,i)=>!removedIdx.has(i));
-    const logRows=[]; groups.forEach((g,gi)=>{ const autoKeep=pickKeepIndex(g,cfg); g.forEach(i=>{ const decided=decisions.get(i); const status = removedIdx.has(i)?'EXCLUÍDO':'MANTIDO'; let motivo=''; if(groupNoDelete.has(gi)) motivo='Mantido por decisão manual (grupo marcado como não excluir)'; else if(decided==='keep') motivo='Mantido por decisão manual'; else if(decided==='remove') motivo='Excluído por decisão manual'; else motivo = (i===autoKeep)?'Mantido (regra: data mais antiga)':'Excluído (duplicidade pelo algoritmo)'; const base={...rows[i]}; logRows.push({Log: status+' — '+motivo, Grupo: gi+1, LinhaOriginal: rows[i]?.__row ?? '', ...base}); }) });
+  function getDateKeyForCfg(cfg){
+    if(cfg.colNasc==null) return null;
+    return window._headersOriginal[cfg.colNasc] ?? null;
+  }
+
+  function formatRowForExport(row,dateKey){
+    const base={...row};
+    if(!dateKey) return base;
+    const original=base[dateKey];
+    if(original===null || original===undefined || original===''){ base[dateKey]=''; return base; }
+    const parsed=parseDateBR(original);
+    base[dateKey]=parsed?formatDateBRStr(parsed):String(original);
+    return base;
+  }
+
+  function exportExcel(){ const cfg=buildCfg(); applyDecisions(cfg); const dateKey=getDateKeyForCfg(cfg);
+    const dedup = rows.map((row,i)=>({row,i})).filter(({i})=>!removedIdx.has(i)).map(({row})=>formatRowForExport(row,dateKey));
+    const logRows=[]; groups.forEach((g,gi)=>{ const autoKeep=pickKeepIndex(g,cfg); g.forEach(i=>{ const decided=decisions.get(i); const status = removedIdx.has(i)?'EXCLUÍDO':'MANTIDO'; let motivo=''; if(groupNoDelete.has(gi)) motivo='Mantido por decisão manual (grupo marcado como não excluir)'; else if(decided==='keep') motivo='Mantido por decisão manual'; else if(decided==='remove') motivo='Excluído por decisão manual'; else motivo = (i===autoKeep)?'Mantido (regra: data mais antiga)':'Excluído (duplicidade pelo algoritmo)'; const base=formatRowForExport(rows[i],dateKey); logRows.push({Log: status+' — '+motivo, Grupo: gi+1, LinhaOriginal: rows[i]?.__row ?? '', ...base}); }) });
     const wb=XLSX.utils.book_new(); const ws1=toWorksheet(dedup); const ws2=XLSX.utils.json_to_sheet(logRows);
     XLSX.utils.book_append_sheet(wb, ws1, 'Final_sem_duplicidade');
     XLSX.utils.book_append_sheet(wb, ws2, 'Log_deduplicacao');
     XLSX.writeFile(wb, 'resultado_deduplicacao.xlsx'); }
 
-  function exportLogOnly(){ const cfg=buildCfg(); applyDecisions(cfg); const logRows=[]; groups.forEach((g,gi)=>{ const autoKeep=pickKeepIndex(g,cfg); g.forEach(i=>{ const decided=decisions.get(i); const status = removedIdx.has(i)?'EXCLUÍDO':'MANTIDO'; let motivo=''; if(groupNoDelete.has(gi)) motivo='Mantido por decisão manual (grupo marcado como não excluir)'; else if(decided==='keep') motivo='Mantido por decisão manual'; else if(decided==='remove') motivo='Excluído por decisão manual'; else motivo=(i===autoKeep)?'Mantido (regra: data mais antiga)':'Excluído (duplicidade pelo algoritmo)'; const base={...rows[i]}; logRows.push({Log: status+' — '+motivo, Grupo: gi+1, LinhaOriginal: rows[i]?.__row ?? '', ...base}); }) }); const wb=XLSX.utils.book_new(); const ws=XLSX.utils.json_to_sheet(logRows); XLSX.utils.book_append_sheet(wb, ws, 'Log_deduplicacao'); XLSX.writeFile(wb, 'log_deduplicacao.xlsx'); }
+  function exportLogOnly(){ const cfg=buildCfg(); applyDecisions(cfg); const dateKey=getDateKeyForCfg(cfg); const logRows=[]; groups.forEach((g,gi)=>{ const autoKeep=pickKeepIndex(g,cfg); g.forEach(i=>{ const decided=decisions.get(i); const status = removedIdx.has(i)?'EXCLUÍDO':'MANTIDO'; let motivo=''; if(groupNoDelete.has(gi)) motivo='Mantido por decisão manual (grupo marcado como não excluir)'; else if(decided==='keep') motivo='Mantido por decisão manual'; else if(decided==='remove') motivo='Excluído por decisão manual'; else motivo=(i===autoKeep)?'Mantido (regra: data mais antiga)':'Excluído (duplicidade pelo algoritmo)'; const base=formatRowForExport(rows[i],dateKey); logRows.push({Log: status+' — '+motivo, Grupo: gi+1, LinhaOriginal: rows[i]?.__row ?? '', ...base}); }) }); const wb=XLSX.utils.book_new(); const ws=XLSX.utils.json_to_sheet(logRows); XLSX.utils.book_append_sheet(wb, ws, 'Log_deduplicacao'); XLSX.writeFile(wb, 'log_deduplicacao.xlsx'); }
 
   ui('btnExportDedup').addEventListener('click', exportExcel);
   ui('btnExportLog').addEventListener('click', exportLogOnly);
