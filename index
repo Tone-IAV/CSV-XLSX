@@ -173,6 +173,20 @@
   const norm = s => rmAcc(String(s||'').toUpperCase().replace(/[^A-Z0-9\s]/g,' ').replace(/\s+/g,' ').trim())
                     .replace(/\sD[AEIOU]\s/g,' ').replace(/\sD[AO]S\s/g,' ');
   const onlyDigits = s => String(s||'').replace(/\D/g,'');
+  const commonWordCount = (a,b)=>{
+    const wa=norm(a).split(' ').filter(Boolean);
+    const wb=norm(b).split(' ').filter(Boolean);
+    if(!wa.length || !wb.length) return 0;
+    const seen=new Set(wb);
+    let count=0;
+    for(const word of wa){
+      if(seen.has(word)){
+        count++;
+        seen.delete(word);
+      }
+    }
+    return count;
+  };
   const parseDateBR = input => {
     if(input instanceof Date && !isNaN(input)) return input;
     if(typeof input==='number' && Number.isFinite(input)){
@@ -250,7 +264,11 @@
     const ocpf=name=>["CPF"].some(k=>name.includes(k));
     const ocns=name=>["CNS","CARTAO SUS","CARTÃO SUS","SUS"].some(k=>name.includes(k));
     const oMun=name=>["MUNIC","MUNICIPIO","MUNICÍPIO","CIDADE"].some(k=>name.includes(k));
-    function fill(sel,pred){ sel.innerHTML='<option value="">—</option>'+headers.map((h,i)=>`<option value="${i}">${h}</option>`).join(''); const ix=headers.findIndex(h=>pred(h)); if(ix>=0) sel.value=ix }
+    function fill(sel,pred){
+      sel.innerHTML='<option value="">—</option>'+
+        window._headersOriginal.map((h,i)=>`<option value="${i}">${h||headers[i]||''}</option>`).join('');
+      const ix=headers.findIndex(h=>pred(h)); if(ix>=0) sel.value=ix;
+    }
     fill(ui('colNome'),opts); fill(ui('colMae'),om); fill(ui('colNasc'),ob); fill(ui('colCPF'),ocpf); fill(ui('colCNS'),ocns); fill(ui('colMun'),oMun);
   }
   function showMap(){ ui('mapBox').classList.remove('hidden'); ui('startBox').classList.remove('hidden'); }
@@ -290,6 +308,8 @@
     if(cfg.useCNS && cns1 && cns2 && cns1===cns2) return {match:true,reason:'CNS igual',sim:1};
     const nome1=get(r1,cfg.colNome), nome2=get(r2,cfg.colNome);
     const nasc1=parseDateBR(get(r1,cfg.colNasc)), nasc2=parseDateBR(get(r2,cfg.colNasc));
+    const commonWords=commonWordCount(nome1,nome2);
+    const sameBirth=nasc1 && nasc2 && nasc1.getTime()===nasc2.getTime();
     let penalty=0; const penaltyInfo=[];
     if(nasc1 && nasc2){
       const sameDay=nasc1.getTime()===nasc2.getTime();
@@ -313,6 +333,13 @@
     }
     const rawSim = sNome + bonus - penalty;
     const sim = Math.min(1, Math.max(0, rawSim));
+    if(!(commonWords>=3 && sameBirth)){
+      const parts=[];
+      if(commonWords<3) parts.push(`menos de 3 palavras coincidentes no nome (${commonWords})`);
+      if(!sameBirth) parts.push('data de nascimento ausente ou diferente');
+      const reasonDetail = parts.length? parts.join(' e '):'regra não atendida';
+      return {match:false, reason:`Regra de duplicidade: ${reasonDetail}`, sim};
+    }
     const details = `nome:${sNome.toFixed(2)}${bonusInfo.length?` + ${bonusInfo.join(' + ')}`:''}${penaltyInfo.length?` - ${penaltyInfo.join(' - ')}`:''}`;
     return {match: sim>=cfg.threshold, reason:`sim=${sim.toFixed(2)} (${details})`, sim};
   }
