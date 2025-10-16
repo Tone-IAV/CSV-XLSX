@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Deduplicador CSV/XLSX — Conferência & Ação Direta</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- PapaParse (CSV) -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <!-- SheetJS (XLSX) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <style>
+    :root{--ok:#16a34a;--warn:#f59e0b;--err:#dc2626;--muted:#64748b}
+    .mono{font-variant-numeric:tabular-nums}
+    .chip{display:inline-flex;gap:.4rem;align-items:center;padding:.2rem .5rem;border-radius:999px;background:#f1f5f9;font-size:.75rem}
+    .card{background:#fff;border:1px solid #e2e8f0;border-radius:1rem;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+    .tableFix{ max-height:70vh; overflow:auto }
+    .badge{font-size:.7rem;padding:.1rem .4rem;border-radius:.5rem;background:#eef2ff}
+    .muted{ color:#64748b }
+    table thead th{ position:sticky; top:0; background:#fff; box-shadow:inset 0 -1px 0 #e2e8f0; }
+    tbody tr:nth-child(even){ background:#f8fafc }
+    td,th{ white-space:nowrap }
+    .actCell label{ margin-right:.5rem }
+    .note{ font-size:.75rem }
+    .danger{ color:#b91c1c }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+  <header class="bg-white border-b sticky top-0 z-10">
+    <div class="w-full p-4 flex flex-wrap gap-3 items-center justify-between">
+      <h1 class="text-xl md:text-2xl font-semibold">🔎 Deduplicador CSV/XLSX — Conferência & Ação Direta</h1>
+      <div class="text-sm text-slate-600">Offline • Processa no navegador • CSV e XLSX</div>
+    </div>
+  </header>
+
+  <main class="w-full max-w-none p-4 md:p-6 space-y-6">
+    <!-- Upload + Analisador lateral -->
+    <section class="card p-4 md:p-6 space-y-4">
+      <div class="flex flex-col lg:flex-row gap-6 lg:items-start lg:justify-between">
+        <div class="flex-1 min-w-0 space-y-4">
+          <div class="flex flex-col md:flex-row gap-4 md:items-center md:justify-between">
+            <div>
+              <h2 class="text-lg font-semibold">1) Carregue seu arquivo</h2>
+              <p class="text-slate-600 text-sm">Aceita <b>CSV</b> e <b>XLSX</b>. Leitura em <em>stream</em> (CSV) e via <span class="badge">SheetJS</span> (XLSX).</p>
+            </div>
+            <div class="flex gap-2">
+              <input id="file" type="file" accept=".csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,.xlsx,.xls" class="block text-sm" />
+              <button id="btnSample" class="px-3 py-2 rounded bg-slate-900 text-white text-sm">Testar com exemplo</button>
+            </div>
+          </div>
+
+          <div id="fileMeta" class="text-sm text-slate-700 hidden"></div>
+
+          <div id="mapBox" class="hidden grid md:grid-cols-2 gap-4">
+            <div class="space-y-2">
+              <h3 class="font-medium">Mapeie as colunas</h3>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label class="text-sm text-slate-600">Nome</label>
+                  <select id="colNome" class="w-full border rounded p-2 text-sm"></select>
+                </div>
+                <div>
+                  <label class="text-sm text-slate-600">Nome da mãe (opcional)</label>
+                  <select id="colMae" class="w-full border rounded p-2 text-sm"></select>
+                </div>
+                <div>
+                  <label class="text-sm text-slate-600">Data de nascimento</label>
+                  <select id="colNasc" class="w-full border rounded p-2 text-sm"></select>
+                </div>
+                <div>
+                  <label class="text-sm text-slate-600">CPF (opcional)</label>
+                  <select id="colCPF" class="w-full border rounded p-2 text-sm"></select>
+                </div>
+                <div>
+                  <label class="text-sm text-slate-600">CNS/Cartão SUS (opcional)</label>
+                  <select id="colCNS" class="w-full border rounded p-2 text-sm"></select>
+                </div>
+                <div>
+                  <label class="text-sm text-slate-600">Município (opcional)</label>
+                  <select id="colMun" class="w-full border rounded p-2 text-sm"></select>
+                </div>
+              </div>
+            </div>
+            <div class="space-y-2">
+              <h3 class="font-medium">Regras e sensibilidade</h3>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <label class="flex items-center gap-2 text-sm"><input id="useCPF" type="checkbox" checked> Usar CPF (exato)</label>
+                <label class="flex items-center gap-2 text-sm"><input id="useCNS" type="checkbox" checked> Usar CNS (exato)</label>
+                <label class="flex items-center gap-2 text-sm"><input id="useMae" type="checkbox" checked> Considerar Nome da mãe</label>
+                <label class="flex items-center gap-2 text-sm"><input id="useMun" type="checkbox"> Considerar Município</label>
+                <div class="col-span-2">
+                  <label class="text-sm">Similaridade mínima (0.70–0.98) <span id="thrVal" class="chip">0.90</span></label>
+                  <input id="threshold" type="range" min="0.7" max="0.98" step="0.01" value="0.90" class="w-full">
+                </div>
+                <div class="col-span-2">
+                  <label class="text-sm">Bloqueio (aceleração)</label>
+                  <select id="blocking" class="w-full border rounded p-2 text-sm">
+                    <option value="initialYear">Inicial do nome + ano de nascimento (recomendado)</option>
+                    <option value="soundexYear">SoundexBR + ano de nascimento</option>
+                    <option value="none">Sem bloqueio (mais lento)</option>
+                  </select>
+                </div>
+                <div class="col-span-2">
+                  <label class="text-sm flex items-center gap-2"><input id="hardRemove" type="checkbox"> <span>Quando eu clicar <b>Excluir agora</b>, <span class="danger">remover da visualização</span> imediatamente</span></label>
+                  <div class="text-xs muted">Se desligado, o sistema apenas marca para exclusão na exportação. Ligado = some da tabela e do grupo.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="startBox" class="hidden flex flex-wrap gap-2 items-center">
+            <button id="btnScan" class="px-4 py-2 rounded bg-emerald-600 text-white disabled:opacity-50">2) Encontrar duplicidades</button>
+            <button id="btnClear" class="px-3 py-2 rounded border">Limpar</button>
+            <div id="progress" class="text-sm text-slate-600"></div>
+          </div>
+        </div>
+
+        <!-- Analisador ao lado -->
+        <aside id="analyzerPanel" class="w-full lg:w-96 shrink-0 card p-4 space-y-3 h-full">
+          <h3 class="text-lg font-semibold">Analisador</h3>
+          <div id="stats" class="grid grid-cols-2 gap-2 text-sm"></div>
+          <div class="space-y-2 text-sm text-slate-700">
+            <p class="chip">Regra automática: manter a <strong>data de nascimento mais antiga</strong>.</p>
+            <p class="chip">Você pode marcar <strong>Excluir agora</strong> por linha ou usar os rádios Manter/Excluir.</p>
+            <details class="mt-2">
+              <summary class="cursor-pointer font-medium">Como a similaridade é calculada?</summary>
+              <ul class="list-disc ml-5 mt-1 text-slate-600">
+                <li>Normalização (caixa, acentos, pontuação, espaços, stopwords)</li>
+                <li>Jaro‑Winkler + bônus por ano/data iguais, mãe, município.</li>
+                <li>Bloqueio por chave para acelerar em bases grandes.</li>
+              </ul>
+            </details>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Resultados -->
+    <section id="results" class="hidden">
+      <div class="card p-3 md:p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-semibold">Grupos suspeitos de duplicidade</h2>
+          <div class="flex gap-2">
+            <button id="btnExportDedup" class="px-3 py-2 rounded bg-indigo-600 text-white text-sm">Exportar Excel (deduplicado & log)</button>
+            <button id="btnExportLog" class="px-3 py-2 rounded bg-slate-900 text-white text-sm">Exportar Excel (somente log)</button>
+          </div>
+        </div>
+        <div class="mb-2 text-xs text-slate-600">Use <b>Excluir agora</b> para aplicar sua decisão de forma imediata (visual) ou marque <b>Excluir</b> para apenas registrar para a exportação.</div>
+        <div id="groups" class="tableFix text-sm"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+  // ===== Utilidades BR =====
+  const rmAcc = s => String(s||'').normalize('NFD').replace(/\p{Diacritic}/gu,'');
+  const norm = s => rmAcc(String(s||'').toUpperCase().replace(/[^A-Z0-9\s]/g,' ').replace(/\s+/g,' ').trim())
+                    .replace(/\sD[AEIOU]\s/g,' ').replace(/\sD[AO]S\s/g,' ');
+  const onlyDigits = s => String(s||'').replace(/\D/g,'');
+  const parseDateBR = s => { s=String(s||'').trim(); if(!s) return null;
+    const d1=s.match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})$/); if(d1){const[,dd,mm,yy]=d1; const d=new Date(+yy,+mm-1,+dd); return isNaN(d)?null:d}
+    const d2=s.match(/^(\d{4})-(\d{2})-(\d{2})$/); if(d2){const[,yy,mm,dd]=d2; const d=new Date(+yy,+mm-1,+dd); return isNaN(d)?null:d}
+    const t=new Date(s); return isNaN(t)?null:t }
+  const y = d => d? d.getFullYear(): '';
+  function soundexBR(str){ str=norm(str).replace(/H/g,''); if(!str) return '';
+    const map={B:1,F:1,P:1,V:1,C:2,G:2,J:2,K:2,Q:2,S:2,X:2,Z:2,D:3,T:3,L:4,M:5,N:5,R:6};
+    const first=str[0]; let code=first; let prev=map[first]||'';
+    for(let i=1;i<str.length;i++){ const ch=str[i]; if(ch===' ') continue; const v=map[ch]||''; if(v!=='' && v!=prev) code+=v; prev=v; }
+    return (code+"000").slice(0,4) }
+  function jaroWinkler(a,b){ a=norm(a); b=norm(b); if(!a||!b) return 0; const m=Math.floor(Math.max(a.length,b.length)/2)-1;
+    let matches=0, trans=0; const am=new Array(a.length).fill(false), bm=new Array(b.length).fill(false);
+    for(let i=0;i<a.length;i++){ const s=Math.max(0,i-m), e=Math.min(i+m+1,b.length); for(let j=s;j<e;j++) if(!bm[j]&&a[i]===b[j]){am[i]=bm[j]=true;matches++;break}}
+    if(!matches) return 0; let k=0; for(let i=0;i<a.length;i++) if(am[i]){ while(!bm[k]) k++; if(a[i]!==b[k]) trans++; k++; }
+    const j=(matches/a.length + matches/b.length + (matches - trans/2)/matches)/3; let l=0; for(; l<Math.min(4,a.length,b.length)&&a[l]===b[l]; l++);
+    return j + l*0.1*(1-j) }
+
+  // ===== Estado =====
+  let rows=[], headers=[]; let groups=[]; // arrays de índices
+  let keepIdx=new Set(), removedIdx=new Set(), dupTouched=new Set();
+  let decisions=new Map(); // rowIndex -> 'keep'|'remove'
+  let groupNoDelete=new Set(); // gi -> true
+  const ui=id=>document.getElementById(id);
+
+  // ===== Entrada (CSV/XLSX) =====
+  function loadFromObjects(objs){
+    rows = objs.map((o,idx)=>({__row:idx+2, ...o}));
+    headers = Object.keys(objs[0]||{}).map(h=>norm(h));
+    window._headersOriginal = Object.keys(objs[0]||{});
+    ['colNome','colMae','colNasc','colCPF','colCNS','colMun'].forEach(id=>{ const el=ui(id); el.innerHTML=''; window._headersOriginal.forEach((h,i)=>{ const opt=document.createElement('option'); opt.value=i; opt.textContent=h; el.appendChild(opt) }) });
+    autoMap(); ui('fileMeta').classList.remove('hidden'); ui('fileMeta').innerHTML = `<span class="chip">Registros: <b>${rows.length}</b></span> <span class="chip">Colunas: <b>${window._headersOriginal.length}</b></span>`; showMap();
+  }
+  function autoMap(){
+    const opts=name=>["NOME","NOME COMPLETO","PACIENTE","ATENDIDO","ALUNO"].some(k=>name.includes(k));
+    const om=name=>["MAE","MÃE","NOME DA MAE","NOME DA MÃE"].some(k=>name.includes(k));
+    const ob=name=>["NASC","NASCIMENTO","DATA NASC","DT NASC","DATA DE NASC"].some(k=>name.includes(k));
+    const ocpf=name=>["CPF"].some(k=>name.includes(k));
+    const ocns=name=>["CNS","CARTAO SUS","CARTÃO SUS","SUS"].some(k=>name.includes(k));
+    const oMun=name=>["MUNIC","MUNICIPIO","MUNICÍPIO","CIDADE"].some(k=>name.includes(k));
+    function fill(sel,pred){ sel.innerHTML='<option value="">—</option>'+headers.map((h,i)=>`<option value="${i}">${h}</option>`).join(''); const ix=headers.findIndex(h=>pred(h)); if(ix>=0) sel.value=ix }
+    fill(ui('colNome'),opts); fill(ui('colMae'),om); fill(ui('colNasc'),ob); fill(ui('colCPF'),ocpf); fill(ui('colCNS'),ocns); fill(ui('colMun'),oMun);
+  }
+  function showMap(){ ui('mapBox').classList.remove('hidden'); ui('startBox').classList.remove('hidden'); }
+
+  ui('file').addEventListener('change', ev=>{
+    const f=ev.target.files[0]; if(!f) return;
+    rows=[]; headers=[]; groups=[]; keepIdx.clear(); removedIdx.clear(); dupTouched.clear(); decisions.clear(); groupNoDelete.clear();
+    const name=(f.name||'').toLowerCase();
+    if(name.endsWith('.xlsx') || name.endsWith('.xls')){
+      const fr=new FileReader(); fr.onload=e=>{ const data=new Uint8Array(e.target.result); const wb=XLSX.read(data,{type:'array'}); const ws=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:'', raw:false}); loadFromObjects(ws) }; fr.readAsArrayBuffer(f);
+    }else{
+      Papa.parse(f,{header:true, skipEmptyLines:true, worker:true, encoding:'utf-8', chunk:res=>rows.push(...res.data), complete:()=>loadFromObjects(rows)});
+    }
+  });
+
+  // Exemplo
+  ui('btnSample').addEventListener('click', ()=>{
+    const csv = `nome,data_nasc,cpf,mae,municipio\n`+
+      `JOSE ANTONIO SILVA,12/03/1980,12345678909,MARIA DE LOURDES,CAFRNAUM\n`+
+      `JOSÉ A SILVA,1980-03-12,123.456.789-09,MARIA LOURDES,CAFARNAUM\n`+
+      `ANA BEATRIZ SOUZA,05/11/1992,,JOANA D ARC,SOBRADINHO\n`+
+      `ANA B SOUZA,05/11/1992,,JOANA D'ARC,SOBRADINHO\n`+
+      `CARLA NUNES,2001-01-01,11122233344,,SALVADOR`;
+    Papa.parse(csv,{header:true, complete: r=> loadFromObjects(r.data)});
+  });
+
+  ui('threshold').addEventListener('input', e=> ui('thrVal').textContent=(+e.target.value).toFixed(2));
+
+  // ===== Similaridade / Cluster =====
+  function get(r,idx){ if(idx===''||idx==null) return ''; const key=window._headersOriginal[idx]; return r[key]; }
+  function blockKey(r,cfg){ const nome=get(r,cfg.colNome); const dn=parseDateBR(get(r,cfg.colNasc)); const ano=y(dn)||''; if(cfg.blocking==='initialYear') return (norm(nome)[0]||'')+'|'+ano; if(cfg.blocking==='soundexYear') return soundexBR(nome)+'|'+ano; return 'ALL'; }
+  function score(a,b){ return jaroWinkler(a,b) }
+  function compare(r1,r2,cfg){
+    const cpf1=onlyDigits(get(r1,cfg.colCPF)), cpf2=onlyDigits(get(r2,cfg.colCPF));
+    const cns1=onlyDigits(get(r1,cfg.colCNS)), cns2=onlyDigits(get(r2,cfg.colCNS));
+    if(cfg.useCPF && cpf1 && cpf2 && cpf1===cpf2) return {match:true,reason:'CPF igual',sim:1};
+    if(cfg.useCNS && cns1 && cns2 && cns1===cns2) return {match:true,reason:'CNS igual',sim:1};
+    const nome1=get(r1,cfg.colNome), nome2=get(r2,cfg.colNome);
+    const nasc1=parseDateBR(get(r1,cfg.colNasc)), nasc2=parseDateBR(get(r2,cfg.colNasc));
+    const sNome=score(nome1,nome2); let bonus=0;
+    if(nasc1&&nasc2){ if(nasc1.getTime()===nasc2.getTime()) bonus+=0.08; else if(y(nasc1)===y(nasc2)) bonus+=0.04; }
+    if(cfg.useMae){ const mae1=get(r1,cfg.colMae), mae2=get(r2,cfg.colMae); const sm=mae1||mae2?score(mae1,mae2):0; bonus+=Math.min(0.08, sm*0.08); }
+    if(cfg.useMun){ const m1=get(r1,cfg.colMun), m2=get(r2,cfg.colMun); if(m1&&m2&&norm(m1)===norm(m2)) bonus+=0.02; }
+    const sim = Math.min(1,sNome+bonus); return {match: sim>=cfg.threshold, reason:`sim=${sim.toFixed(2)} (nome:${sNome.toFixed(2)} + bonus:${bonus.toFixed(2)})`, sim};
+  }
+  function clusterize(rows,cfg){ const blocks=new Map(); rows.forEach((r,i)=>{ const k=blockKey(r,cfg); if(!blocks.has(k)) blocks.set(k,[]); blocks.get(k).push(i)});
+    const visited=new Set(); const clusters=[]; for(const ids of blocks.values()){
+      for(const i of ids){ if(visited.has(i)) continue; visited.add(i); const q=[i]; const cur=[i];
+        while(q.length){ const a=q.shift(); for(const j of ids){ if(visited.has(j)||j===a) continue; const cmp=compare(rows[a],rows[j],cfg); if(cmp.match){ visited.add(j); q.push(j); cur.push(j) }} }
+        if(cur.length>1) clusters.push(cur);
+      }
+    } return clusters }
+
+  // ===== Lógica principal =====
+  function buildCfg(){ return {
+    colNome: ui('colNome').value!==''? +ui('colNome').value : null,
+    colMae: ui('colMae').value!==''? +ui('colMae').value : null,
+    colNasc: ui('colNasc').value!==''? +ui('colNasc').value : null,
+    colCPF: ui('colCPF').value!==''? +ui('colCPF').value : null,
+    colCNS: ui('colCNS').value!==''? +ui('colCNS').value : null,
+    colMun: ui('colMun').value!==''? +ui('colMun').value : null,
+    threshold:+ui('threshold').value, useCPF:ui('useCPF').checked, useCNS:ui('useCNS').checked, useMae:ui('useMae').checked, useMun:ui('useMun').checked,
+    blocking: ui('blocking').value, hardRemove: ui('hardRemove').checked } }
+
+  function pickKeepIndex(indices,cfg){ let best=indices[0]; let bestDate=parseDateBR(get(rows[best],cfg.colNasc))||new Date(8640000000000000);
+    for(const i of indices){ const d=parseDateBR(get(rows[i],cfg.colNasc))||new Date(8640000000000000); if(d<bestDate){ best=i; bestDate=d } } return best }
+
+  function renderStats(){ const total=rows.length; const affected=dupTouched.size; ui('stats').innerHTML=`
+    <div class="p-2 rounded bg-emerald-50 border text-emerald-800">Total linhas<br><b class="mono text-lg">${total}</b></div>
+    <div class="p-2 rounded bg-indigo-50 border text-indigo-800">Grupos<br><b class="mono text-lg">${groups.length}</b></div>
+    <div class="p-2 rounded bg-amber-50 border text-amber-800">Registros tocados<br><b class="mono text-lg">${affected}</b></div>
+    <div class="p-2 rounded bg-rose-50 border text-rose-800">Excluídos (proposta)<br><b class="mono text-lg">${removedIdx.size}</b></div>` }
+
+  function renderGroups(){
+    const container=ui('groups'); if(groups.length===0){ container.innerHTML='<div class="text-slate-600">Nenhum grupo suspeito encontrado com as regras atuais.</div>'; return }
+    const cols = window._headersOriginal; container.innerHTML='';
+    groups.forEach((g,gi)=>{
+      const rowsHtml = g.map(idx=>{
+        const r=rows[idx]; const act = decisions.get(idx) || (removedIdx.has(idx)?'remove':'keep');
+        const actionHtml = `<td class="px-2 py-1 border-t actCell"><label><input type="radio" name="g${gi}-r${idx}" value="keep" ${act==='keep'?'checked':''}> Manter</label><label><input type="radio" name="g${gi}-r${idx}" value="remove" ${act==='remove'?'checked':''}> Excluir</label></td>`;
+        const cmdHtml = `<td class="px-2 py-1 border-t whitespace-nowrap">
+            <button data-del="${idx}" data-gi="${gi}" class="px-2 py-0.5 text-xs rounded border border-rose-300 hover:bg-rose-50">🗑 Excluir agora</button>
+            <button data-keep="${idx}" class="ml-1 px-2 py-0.5 text-xs rounded border border-emerald-300 hover:bg-emerald-50">✓ Manter</button>
+          </td>`;
+        const cells = cols.map(h=>`<td class=\"px-2 py-1 border-t\">${(r[h]??'')}</td>`).join('');
+        return `<tr data-idx=\"${idx}\" data-gi=\"${gi}\" class=\"hover:bg-indigo-50\">${actionHtml}<td class=\"px-2 py-1 border-t font-medium\">${r.__row??''}</td>${cmdHtml}${cells}</tr>`
+      }).join('');
+      const head = ['Ação','# Linha','Comandos',...cols].map(h=>`<th class="px-2 py-1 text-left text-slate-600">${h}</th>`).join('');
+      const giTitle = `<div class=\"flex flex-wrap items-center justify-between gap-2\"><div class=\"font-medium\">Grupo #${gi+1} <span class=\"badge\">${g.length} registros</span></div><label class=\"text-sm flex items-center gap-2\"><input type=\"checkbox\" data-g-none=\"${gi}\" ${groupNoDelete.has(gi)?'checked':''}> Não excluir nenhum deste grupo</label></div><div class=\"note muted\">Regra automática sugerida: manter a data de nascimento mais antiga. Você pode sobrescrever abaixo.</div>`;
+      const table = `<table class="w-full text-xs"><thead><tr>${head}</tr></thead><tbody>${rowsHtml}</tbody></table>`;
+      const box=document.createElement('div'); box.className='border rounded-lg p-2 mb-3 bg-white'; box.innerHTML=giTitle+`<div class="mt-2">${table}</div>`; container.appendChild(box);
+    });
+
+    // listeners
+    container.querySelectorAll('input[type="radio"]').forEach(inp=>{
+      inp.addEventListener('change', e=>{ const tr=e.target.closest('tr'); const idx=+tr.getAttribute('data-idx'); decisions.set(idx, e.target.value); applyDecisions(buildCfg()) })
+    });
+    container.querySelectorAll('button[data-keep]').forEach(btn=> btn.addEventListener('click', ()=>{ const idx=+btn.getAttribute('data-keep'); decisions.set(idx,'keep'); applyDecisions(buildCfg()); renderGroups(); }));
+    container.querySelectorAll('button[data-del]').forEach(btn=> btn.addEventListener('click', ()=>{ const idx=+btn.getAttribute('data-del'); const gi=+btn.getAttribute('data-gi'); handleImmediateDelete(idx,gi); }));
+    container.querySelectorAll('input[type="checkbox"][data-g-none]').forEach(chk=> chk.addEventListener('change', e=>{ const gi=+e.target.getAttribute('data-g-none'); if(e.target.checked) groupNoDelete.add(gi); else groupNoDelete.delete(gi); applyDecisions(buildCfg()); renderGroups(); }));
+  }
+
+  function computeAuto(cfg){ removedIdx.clear(); keepIdx.clear(); dupTouched.clear(); groups.forEach(g=> g.forEach(i=>dupTouched.add(i)) ); groups.forEach(g=>{ const keep=pickKeepIndex(g,cfg); keepIdx.add(keep); g.forEach(i=>{ if(i!==keep) removedIdx.add(i) }) }); }
+
+  function applyDecisions(cfg){ removedIdx.clear(); keepIdx.clear(); groups.forEach((g,gi)=>{ if(groupNoDelete.has(gi)){ g.forEach(i=>keepIdx.add(i)); return } const markedKeep=[], markedRemove=[]; g.forEach(i=>{ const d=decisions.get(i); if(d==='keep') markedKeep.push(i); if(d==='remove') markedRemove.push(i) }); if(markedKeep.length===0 && markedRemove.length===0){ const keep=pickKeepIndex(g,cfg); keepIdx.add(keep); g.forEach(i=>{ if(i!==keep) removedIdx.add(i) }); return } markedKeep.forEach(i=>keepIdx.add(i)); g.forEach(i=>{ if(keepIdx.has(i)) return; if(markedRemove.includes(i)) { removedIdx.add(i); return; } if(markedRemove.length>0) { /* mantém não marcados */ } else { const keep=pickKeepIndex(g,cfg); if(i!==keep) removedIdx.add(i); else keepIdx.add(i); } }); }); renderStats(); }
+
+  // ===== Ação direta: Excluir agora =====
+  function handleImmediateDelete(idx,gi){ const cfg=buildCfg(); decisions.set(idx,'remove'); if(!cfg.hardRemove){ applyDecisions(cfg); renderGroups(); return; }
+    // hard remove: tira da base e reagrupa
+    rows.splice(idx,1);
+    // Rebuild estruturas (índices mudaram)
+    decisions = new Map(); removedIdx.clear(); keepIdx.clear(); dupTouched.clear(); groupNoDelete.delete(gi);
+    groups = clusterize(rows,cfg);
+    renderGroups(); applyDecisions(cfg); renderStats();
+  }
+
+  // ===== Botões principais =====
+  ui('btnScan').addEventListener('click', ()=>{ const cfg=buildCfg(); if(cfg.colNome==null || cfg.colNasc==null){ alert('Mapeie ao menos Nome e Data de Nascimento.'); return } const t0=performance.now(); ui('progress').textContent='Processando…'; setTimeout(()=>{ groups = clusterize(rows,cfg); computeAuto(cfg); decisions.clear(); groupNoDelete.clear(); ui('results').classList.remove('hidden'); renderGroups(); applyDecisions(cfg); ui('progress').textContent=`OK em ${(performance.now()-t0).toFixed(0)} ms. Grupos: ${groups.length}.`; }, 10); });
+  ui('btnClear').addEventListener('click', ()=> location.reload());
+
+  // ===== Exportação =====
+  function toWorksheet(arr){ return XLSX.utils.json_to_sheet(arr, {header: window._headersOriginal}); }
+
+  function exportExcel(){ const cfg=buildCfg(); applyDecisions(cfg); const dedup = rows.filter((_,i)=>!removedIdx.has(i));
+    const logRows=[]; groups.forEach((g,gi)=>{ const autoKeep=pickKeepIndex(g,cfg); g.forEach(i=>{ const decided=decisions.get(i); const status = removedIdx.has(i)?'EXCLUÍDO':'MANTIDO'; let motivo=''; if(groupNoDelete.has(gi)) motivo='Mantido por decisão manual (grupo marcado como não excluir)'; else if(decided==='keep') motivo='Mantido por decisão manual'; else if(decided==='remove') motivo='Excluído por decisão manual'; else motivo = (i===autoKeep)?'Mantido (regra: data mais antiga)':'Excluído (duplicidade pelo algoritmo)'; const base={...rows[i]}; logRows.push({Log: status+' — '+motivo, Grupo: gi+1, LinhaOriginal: rows[i]?.__row ?? '', ...base}); }) });
+    const wb=XLSX.utils.book_new(); const ws1=toWorksheet(dedup); const ws2=XLSX.utils.json_to_sheet(logRows);
+    XLSX.utils.book_append_sheet(wb, ws1, 'Final_sem_duplicidade');
+    XLSX.utils.book_append_sheet(wb, ws2, 'Log_deduplicacao');
+    XLSX.writeFile(wb, 'resultado_deduplicacao.xlsx'); }
+
+  function exportLogOnly(){ const cfg=buildCfg(); applyDecisions(cfg); const logRows=[]; groups.forEach((g,gi)=>{ const autoKeep=pickKeepIndex(g,cfg); g.forEach(i=>{ const decided=decisions.get(i); const status = removedIdx.has(i)?'EXCLUÍDO':'MANTIDO'; let motivo=''; if(groupNoDelete.has(gi)) motivo='Mantido por decisão manual (grupo marcado como não excluir)'; else if(decided==='keep') motivo='Mantido por decisão manual'; else if(decided==='remove') motivo='Excluído por decisão manual'; else motivo=(i===autoKeep)?'Mantido (regra: data mais antiga)':'Excluído (duplicidade pelo algoritmo)'; const base={...rows[i]}; logRows.push({Log: status+' — '+motivo, Grupo: gi+1, LinhaOriginal: rows[i]?.__row ?? '', ...base}); }) }); const wb=XLSX.utils.book_new(); const ws=XLSX.utils.json_to_sheet(logRows); XLSX.utils.book_append_sheet(wb, ws, 'Log_deduplicacao'); XLSX.writeFile(wb, 'log_deduplicacao.xlsx'); }
+
+  ui('btnExportDedup').addEventListener('click', exportExcel);
+  ui('btnExportLog').addEventListener('click', exportLogOnly);
+  </script>
+</body>
+</html>
