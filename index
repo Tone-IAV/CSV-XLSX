@@ -247,6 +247,9 @@
   let groupNoDelete=new Set(); // gi -> true
   let hardRemovedRows=new Set(); // linhas originais removidas imediatamente
   let dateHeaderSet=new Set();
+  let originalWorkbookData=null;
+  let originalSheetName=null;
+  let originalSheetRef=null;
   const ui=id=>document.getElementById(id);
 
   // ===== Entrada (CSV/XLSX) =====
@@ -302,14 +305,26 @@
     rows=[]; headers=[]; groups=[]; keepIdx.clear(); removedIdx.clear(); dupTouched.clear(); decisions.clear(); groupNoDelete.clear(); hardRemovedRows.clear();
     const name=(f.name||'').toLowerCase();
     if(name.endsWith('.xlsx') || name.endsWith('.xls')){
-      const fr=new FileReader(); fr.onload=e=>{ const data=new Uint8Array(e.target.result); const wb=XLSX.read(data,{type:'array'}); const ws=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:'', raw:false}); loadFromObjects(ws) }; fr.readAsArrayBuffer(f);
+      const fr=new FileReader(); fr.onload=e=>{
+        const buffer=e.target.result;
+        const data=new Uint8Array(buffer);
+        const wb=XLSX.read(data,{type:'array'});
+        originalWorkbookData = buffer.slice(0);
+        originalSheetName = wb.SheetNames[0] || null;
+        const sheet = originalSheetName ? wb.Sheets[originalSheetName] : null;
+        originalSheetRef = sheet && sheet['!ref'] ? sheet['!ref'] : null;
+        const ws=XLSX.utils.sheet_to_json(sheet||{}, {defval:'', raw:false});
+        loadFromObjects(ws);
+      }; fr.readAsArrayBuffer(f);
     }else{
+      originalWorkbookData=null; originalSheetName=null; originalSheetRef=null;
       Papa.parse(f,{header:true, skipEmptyLines:true, worker:true, encoding:'utf-8', chunk:res=>rows.push(...res.data), complete:()=>loadFromObjects(rows)});
     }
   });
 
   // Exemplo
   ui('btnSample').addEventListener('click', ()=>{
+    originalWorkbookData=null; originalSheetName=null; originalSheetRef=null;
     const csv = `nome,data_nasc,cpf,mae,municipio\n`+
       `JOSE ANTONIO SILVA,12/03/1980,12345678909,MARIA DE LOURDES,CAFRNAUM\n`+
       `JOSÉ A SILVA,1980-03-12,123.456.789-09,MARIA LOURDES,CAFARNAUM\n`+
@@ -484,6 +499,150 @@
   // ===== Exportação =====
   function toWorksheet(arr){ return XLSX.utils.json_to_sheet(arr, {header: window._headersOriginal}); }
 
+  function cloneOriginalWorkbook(){
+    if(!originalWorkbookData) return null;
+    try{
+      if(originalWorkbookData instanceof ArrayBuffer){
+        return XLSX.read(originalWorkbookData.slice(0), {type:'array'});
+      }
+      if(ArrayBuffer.isView(originalWorkbookData)){
+        return XLSX.read(originalWorkbookData.slice(0), {type:'array'});
+      }
+      return XLSX.read(originalWorkbookData, {type:'array'});
+    }catch(err){
+      console.error('Falha ao clonar workbook original', err);
+      return null;
+    }
+  }
+
+  function prepareCellValue(value, templateCell){
+    const templateType = templateCell?.t;
+    if(value===null || value===undefined || value===''){
+      return {empty:true, type: templateType};
+    }
+    if(templateType==='n' && typeof value==='number'){
+      return {value, type:'n'};
+    }
+    if(templateType==='d'){
+      if(value instanceof Date) return {value, type:'d'};
+      const parsed=parseDateBR(value);
+      if(parsed) return {value:parsed, type:'d'};
+    }
+    if(value instanceof Date) return {value, type:'d'};
+    return {value:String(value), type:'s'};
+  }
+
+  function removeSheetIfExists(wb,name){
+    if(!wb || !name) return;
+    const idx=wb.SheetNames.indexOf(name);
+    if(idx>=0){
+      wb.SheetNames.splice(idx,1);
+      delete wb.Sheets[name];
+    }
+  }
+
+  function applyDataToTemplateSheet(sheet, headers, dataRows){
+    if(!sheet || !Array.isArray(headers) || headers.length===0) return;
+    const ref = originalSheetRef || sheet['!ref'] || 'A1';
+    let range;
+    try{ range=XLSX.utils.decode_range(ref); }
+    catch(err){ range={s:{r:0,c:0}, e:{r:dataRows.length?dataRows.length:0, c:headers.length?headers.length-1:0}}; }
+    const startRow = range.s.r + 1;
+    const colOffset = range.s.c;
+    const templates=headers.map((_,ci)=>{
+      const cellRef=XLSX.utils.encode_cell({r:startRow, c:colOffset+ci});
+      const cell=sheet[cellRef];
+      return cell?{...cell}:null;
+    });
+    for(let ri=0; ri<dataRows.length; ri++){
+      const rowData=dataRows[ri]||{};
+      for(let ci=0; ci<headers.length; ci++){
+        const key=headers[ci];
+        const value=rowData[key];
+        const addr={r:startRow+ri, c:colOffset+ci};
+        const cellRef=XLSX.utils.encode_cell(addr);
+        const templateCell=templates[ci];
+        let cell=sheet[cellRef];
+        if(!cell){
+          cell=templateCell?{...templateCell}:{t:'s'};
+        }
+        const prepared=prepareCellValue(value, templateCell);
+        if(prepared.empty){
+          if(templateCell && 'v' in templateCell){
+            if(templateCell.t==='n' || templateCell.t==='d') delete cell.v;
+            else cell.v='';
+          }else{
+            cell.v='';
+          }
+          if(prepared.type) cell.t=prepared.type;
+          else if(templateCell?.t) cell.t=templateCell.t;
+          else delete cell.t;
+        }else{
+          cell.v=prepared.value;
+          if(prepared.type) cell.t=prepared.type;
+          else if(templateCell?.t) cell.t=templateCell.t;
+          else if(typeof prepared.value==='number') cell.t='n';
+          else cell.t='s';
+          if(prepared.type==='d' && templateCell?.z) cell.z=templateCell.z;
+        }
+        delete cell.f;
+        delete cell.w;
+        sheet[cellRef]=cell;
+      }
+    }
+    const originalLastRow=range.e.r;
+    for(let r=startRow + dataRows.length; r<=originalLastRow; r++){
+      for(let ci=0; ci<headers.length; ci++){
+        const addr={r, c:colOffset+ci};
+        const cellRef=XLSX.utils.encode_cell(addr);
+        const templateCell=templates[ci];
+        const cell=sheet[cellRef];
+        if(cell){
+          const prepared=prepareCellValue('', templateCell);
+          if(templateCell && 'v' in templateCell){
+            if(templateCell.t==='n' || templateCell.t==='d') delete cell.v;
+            else cell.v='';
+          }else{
+            cell.v='';
+          }
+          if(prepared.type) cell.t=prepared.type;
+          else if(templateCell?.t) cell.t=templateCell.t;
+          else delete cell.t;
+          delete cell.f;
+          delete cell.w;
+          sheet[cellRef]=cell;
+        }
+      }
+    }
+    const lastRow=Math.max(range.s.r, startRow + dataRows.length - 1, range.e.r);
+    const lastCol=Math.max(range.e.c, colOffset + headers.length - 1);
+    sheet['!ref']=XLSX.utils.encode_range({s:{r:range.s.r, c:range.s.c}, e:{r:lastRow, c:lastCol}});
+  }
+
+  function buildWorkbookWithTemplate(dedupRows, logRows){
+    if(!originalWorkbookData || !originalSheetName) return null;
+    const headers=Array.isArray(window._headersOriginal)?window._headersOriginal:[];
+    if(headers.length===0) return null;
+    const wb=cloneOriginalWorkbook();
+    if(!wb) return null;
+    const sheet=wb.Sheets[originalSheetName];
+    if(sheet){
+      applyDataToTemplateSheet(sheet, headers, dedupRows);
+      const finalName='Final_sem_duplicidade';
+      if(originalSheetName!==finalName){
+        removeSheetIfExists(wb, finalName);
+        wb.Sheets[finalName]=sheet;
+        const idx=wb.SheetNames.indexOf(originalSheetName);
+        if(idx>=0) wb.SheetNames[idx]=finalName;
+        delete wb.Sheets[originalSheetName];
+      }
+    }
+    removeSheetIfExists(wb, 'Log_deduplicacao');
+    const logSheet=XLSX.utils.json_to_sheet(logRows);
+    XLSX.utils.book_append_sheet(wb, logSheet, 'Log_deduplicacao');
+    return wb;
+  }
+
   function formatRowForExport(row,dateHeaders){
     const base={...row};
     if(!(dateHeaders instanceof Set) || dateHeaders.size===0) return base;
@@ -500,9 +659,14 @@
   function exportExcel(){ const cfg=buildCfg(); applyDecisions(cfg); const dateHeaders=getDateHeadersForCfg(cfg);
     const dedup = rows.map((row,i)=>({row,i})).filter(({i})=>!removedIdx.has(i)).map(({row})=>formatRowForExport(row,dateHeaders));
     const logRows=[]; groups.forEach((g,gi)=>{ const autoKeep=pickKeepIndex(g,cfg); g.forEach(i=>{ const decided=decisions.get(i); const status = removedIdx.has(i)?'EXCLUÍDO':'MANTIDO'; let motivo=''; if(groupNoDelete.has(gi)) motivo='Mantido por decisão manual (grupo marcado como não excluir)'; else if(decided==='keep') motivo='Mantido por decisão manual'; else if(decided==='remove') motivo='Excluído por decisão manual'; else motivo = (i===autoKeep)?'Mantido (regra: data mais antiga)':'Excluído (duplicidade pelo algoritmo)'; const base=formatRowForExport(rows[i],dateHeaders); logRows.push({Log: status+' — '+motivo, Grupo: gi+1, LinhaOriginal: rows[i]?.__row ?? '', ...base}); }) });
-    const wb=XLSX.utils.book_new(); const ws1=toWorksheet(dedup); const ws2=XLSX.utils.json_to_sheet(logRows);
-    XLSX.utils.book_append_sheet(wb, ws1, 'Final_sem_duplicidade');
-    XLSX.utils.book_append_sheet(wb, ws2, 'Log_deduplicacao');
+    let wb=buildWorkbookWithTemplate(dedup, logRows);
+    if(!wb){
+      wb=XLSX.utils.book_new();
+      const ws1=toWorksheet(dedup);
+      const ws2=XLSX.utils.json_to_sheet(logRows);
+      XLSX.utils.book_append_sheet(wb, ws1, 'Final_sem_duplicidade');
+      XLSX.utils.book_append_sheet(wb, ws2, 'Log_deduplicacao');
+    }
     XLSX.writeFile(wb, 'resultado_deduplicacao.xlsx'); }
 
   function exportLogOnly(){ const cfg=buildCfg(); applyDecisions(cfg); const dateHeaders=getDateHeadersForCfg(cfg); const logRows=[]; groups.forEach((g,gi)=>{ const autoKeep=pickKeepIndex(g,cfg); g.forEach(i=>{ const decided=decisions.get(i); const status = removedIdx.has(i)?'EXCLUÍDO':'MANTIDO'; let motivo=''; if(groupNoDelete.has(gi)) motivo='Mantido por decisão manual (grupo marcado como não excluir)'; else if(decided==='keep') motivo='Mantido por decisão manual'; else if(decided==='remove') motivo='Excluído por decisão manual'; else motivo=(i===autoKeep)?'Mantido (regra: data mais antiga)':'Excluído (duplicidade pelo algoritmo)'; const base=formatRowForExport(rows[i],dateHeaders); logRows.push({Log: status+' — '+motivo, Grupo: gi+1, LinhaOriginal: rows[i]?.__row ?? '', ...base}); }) }); const wb=XLSX.utils.book_new(); const ws=XLSX.utils.json_to_sheet(logRows); XLSX.utils.book_append_sheet(wb, ws, 'Log_deduplicacao'); XLSX.writeFile(wb, 'log_deduplicacao.xlsx'); }
