@@ -404,17 +404,67 @@
   }
 
   function pickKeepIndex(indices,cfg){
+    const sentinelTime=8640000000000000;
+    const nameMeta=indices.map(idx=>{
+      const nome=get(rows[idx],cfg.colNome);
+      const normalized=norm(nome||'');
+      const letters=normalized.replace(/\s+/g,'').length;
+      return {idx, nome, letters};
+    });
+    const lettersByIdx=new Map(nameMeta.map(meta=>[meta.idx, meta.letters]));
+    const filledByIdx=new Map(indices.map(idx=>[idx, countFilledCells(rows[idx])]));
+    const birthTimeByIdx=new Map(indices.map(idx=>{
+      const time=parseDateBR(get(rows[idx],cfg.colNasc))?.getTime()??sentinelTime;
+      return [idx,time];
+    }));
+
+    let hasHighWordMatch=false;
+    for(let a=0;a<nameMeta.length && !hasHighWordMatch;a++){
+      for(let b=a+1;b<nameMeta.length;b++){
+        if(commonWordCount(nameMeta[a].nome,nameMeta[b].nome)>3){
+          hasHighWordMatch=true;
+          break;
+        }
+      }
+    }
+
+    const chooseByLongestName=()=>{
+      let bestIdx=indices[0];
+      let bestLetters=lettersByIdx.get(bestIdx)||0;
+      let bestFilled=filledByIdx.get(bestIdx)||0;
+      let bestDateTime=birthTimeByIdx.get(bestIdx)||sentinelTime;
+      for(const meta of nameMeta){
+        const filled=filledByIdx.get(meta.idx)||0;
+        const dateTime=birthTimeByIdx.get(meta.idx)||sentinelTime;
+        if(meta.letters>bestLetters ||
+          (meta.letters===bestLetters && (filled>bestFilled || (filled===bestFilled && dateTime<bestDateTime)))){
+          bestIdx=meta.idx;
+          bestLetters=meta.letters;
+          bestFilled=filled;
+          bestDateTime=dateTime;
+        }
+      }
+      return bestIdx;
+    };
+
+    if(hasHighWordMatch){
+      return chooseByLongestName();
+    }
+
     let best=indices[0];
-    let bestFilled=countFilledCells(rows[best]);
-    const sentinel=new Date(8640000000000000);
-    let bestDate=parseDateBR(get(rows[best],cfg.colNasc))||sentinel;
+    let bestFilled=filledByIdx.get(best)||0;
+    let bestDateTime=birthTimeByIdx.get(best)||sentinelTime;
+    let bestLetters=lettersByIdx.get(best)||0;
     for(const i of indices){
-      const filled=countFilledCells(rows[i]);
-      const d=parseDateBR(get(rows[i],cfg.colNasc))||sentinel;
-      if(filled>bestFilled || (filled===bestFilled && d<bestDate)){
+      const filled=filledByIdx.get(i)||0;
+      const dateTime=birthTimeByIdx.get(i)||sentinelTime;
+      const letters=lettersByIdx.get(i)||0;
+      if(filled>bestFilled ||
+        (filled===bestFilled && (dateTime<bestDateTime || (dateTime===bestDateTime && letters>bestLetters)))){
         best=i;
         bestFilled=filled;
-        bestDate=d;
+        bestDateTime=dateTime;
+        bestLetters=letters;
       }
     }
     return best;
